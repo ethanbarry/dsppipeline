@@ -1,7 +1,8 @@
 use std::{
     process::exit,
     sync::{atomic::Ordering, mpsc},
-    thread::{self, spawn},
+    thread::{self, sleep},
+    time::Duration,
 };
 
 use dsppipeline::{processing::process, receive, TERMINATED};
@@ -24,12 +25,6 @@ fn main() {
 
     let (tx, rx) = mpsc::channel();
 
-    let receive_thread = thread::spawn(|| receive(tx));
-    let process_thread = thread::spawn(|| process(rx));
-
-    loop {
-        if TERMINATED.load(Ordering::Relaxed) {
-            exit(1)
-        }
-    }
+    let _receive_thread = thread::spawn(|| receive(tx));
+    let _process_thread = thread::spawn(|| process(rx));
 }

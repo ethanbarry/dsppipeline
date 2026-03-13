@@ -8,10 +8,8 @@ use std::{
 
 pub mod processing;
 
-use rtl_sdr_rs::{RtlSdr, DEFAULT_BUF_LENGTH as BUF_LEN};
+use rtl_sdr_rs::{error::RtlsdrError, RtlSdr, DEFAULT_BUF_LENGTH as BUF_LEN};
 use tracing::{debug, error, info, trace, warn};
-
-use crate::processing::config_sdr;
 
 /// Frequency of the transmitter in Hz.
 const FREQUENCY: u32 = 914_975_000;
@@ -32,7 +30,24 @@ fn open_sdr() -> Result<RtlSdr, ()> {
     }
 }
 
-pub fn receive(tx: Sender<Vec<u8>>) {
+/// Configure the SDR device.
+pub fn config_sdr(sdr: &mut RtlSdr, freq: u32, sample_freq: u32) -> Result<(), RtlsdrError> {
+    // Use auto-gain
+    sdr.set_tuner_gain(rtl_sdr_rs::TunerGain::Auto)?;
+    // Disable bias-tee
+    sdr.set_bias_tee(false)?;
+    // Reset the endpoint before we try to read from it (mandatory)
+    sdr.reset_buffer()?;
+    // Set the frequency
+    sdr.set_center_freq(freq)?;
+    // Set sample rate
+    sdr.set_sample_rate(sample_freq)?;
+    // Set bandwidth
+    sdr.set_tuner_bandwidth(60_000)?; // 60 kHz
+    Ok(())
+}
+
+pub fn receive(tx: Sender<Box<[u8; BUF_LEN]>>) {
     info!("Receiving thread started.");
     let sdr = open_sdr();
     if terminated() {
@@ -50,19 +65,21 @@ pub fn receive(tx: Sender<Vec<u8>>) {
     while !terminated() {
         let mut buf: Box<[u8; BUF_LEN]> = alloc_buf();
 
-        let n = sdr.read_sync(&mut *buf);
-        if n.is_err() {
-            info!("Read error: {:#?}", n);
-            break;
+        let res = sdr.read_sync(&mut *buf);
+        match res {
+            Ok(n) => {
+                if n < BUF_LEN {
+                    info!("Short read ({:#?}), samples dropped, exiting!", n);
+                    break;
+                }
+            }
+            Err(e) => {
+                info!("Read error: {:#?}", e);
+                break;
+            }
         }
 
-        let len = n.expect("n is not an err");
-        if len < BUF_LEN {
-            info!("Short read ({:#?}), samples dropped, exiting!", len);
-            break;
-        }
-
-        tx.send(buf.to_vec())
+        tx.send(buf)
             .expect("The other thread has crashed if this fails.");
     }
 
@@ -77,7 +94,6 @@ fn terminated() -> bool {
 /// Allocate a buffer on the heap
 fn alloc_buf<T>() -> Box<T> {
     let layout: Layout = Layout::new::<T>();
-    // TODO move to using safe code once we can allocate an array directly on the heap.
     unsafe {
         let ptr = alloc_zeroed(layout) as *mut T;
         Box::from_raw(ptr)

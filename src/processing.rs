@@ -1,90 +1,98 @@
-use std::sync::mpsc::Receiver;
+use std::{
+    fs::File,
+    io::{self, Write},
+    sync::mpsc::Receiver,
+};
 
-use rtl_sdr_rs::{error::RtlsdrError, RtlSdr};
-use rustfft::num_complex::Complex;
-use tracing::info;
+use rtl_sdr_rs::DEFAULT_BUF_LENGTH as BUF_LEN;
+use rustfft::{num_complex::Complex, FftNum, FftPlanner};
+use tracing::{debug, info, warn};
 
-use crate::{terminated, SAMPLE_FREQUENCY};
+use crate::{terminated, FREQUENCY, SAMPLE_FREQUENCY};
 
-pub fn process(rx: Receiver<Vec<u8>>) {
-    use std::fs::File;
-    use std::io::prelude::*;
+fn complex_decimate(x: &[Complex<i16>]) -> Vec<Complex<i16>> {
+    x.windows(10)
+        .step_by(10)
+        .map(|zs| {
+            zs.iter().fold(Complex::new(0, 0), |acc, z| acc + z) / Complex::new(zs.len() as i16, 0)
+        })
+        .collect()
+}
 
+fn log_complex_to_file(fname: &str, x: &[Complex<i16>]) -> Result<(), io::Error> {
     info!("Opening output file.");
-    let mut f = File::create("./output.csv").expect("File I/O error!");
+    let mut f = File::create(fname)?;
 
+    x.iter()
+        .map(|z| {
+            if z.im > 0 {
+                format!("{}+{}i\n", z.re, z.im)
+            } else if z.im < 0 {
+                format!("{}{}i\n", z.re, z.im)
+            } else {
+                format!("{}+{}i\n", z.re, z.im)
+            }
+        })
+        .for_each(|l| {
+            f.write(l.as_bytes()).expect("Write failed!");
+        });
+
+    Ok(())
+}
+
+pub fn process(rx: Receiver<Box<[u8; BUF_LEN]>>) {
     info!("Processing thread started.");
 
-    let mut buf = rx
-        .recv()
-        .expect("The other thread has crashed if this fails.");
-
     while !terminated() {
-        // 1. Rotate the buffer 90 degrees in the complex plane.
-        let mut tmp: u8;
-        for i in (0..buf.len()).step_by(8) {
-            tmp = 255 - buf[i + 3];
-            buf[i + 3] = buf[i + 2];
-            buf[i + 3] = tmp;
-
-            buf[i + 4] = 255 - buf[i + 4];
-            buf[i + 5] = 255 - buf[i + 5];
-
-            tmp = 255 - buf[i + 6];
-            buf[i + 6] = buf[i + 7];
-            buf[i + 7] = tmp;
-        }
-
-        let signed_buf = buf
+        let signed_buf = rx
+            .recv()
+            .expect("The other thread has crashed if this fails.")
             .iter()
-            .map(|a| *a as i16 - 127)
+            .map(|a| (*a as i16 - 127) / 127)
             .collect::<Vec<i16>>()
             .windows(2)
             .step_by(2)
-            .map(|w| Complex::new(w[0] as i32, w[1] as i32))
-            .collect::<Vec<Complex<i32>>>();
+            .map(|w| Complex::new(w[1], w[0]))
+            .collect::<Vec<Complex<i16>>>();
 
-        let mut res = vec![];
-        // Low-pass filter here.
-        let mut lp_now = Complex::new(0, 0);
-        let mut prev_idx = 0;
-        for orig in 0..signed_buf.len() {
-            lp_now += buf[orig];
+        let signed_buf = complex_decimate(&signed_buf);
 
-            prev_idx += 1;
-            if prev_idx < (1_000_000 / SAMPLE_FREQUENCY + 1) as usize {
-                continue;
-            }
-
-            res.push(lp_now);
-            lp_now = Complex::new(0, 0);
-            prev_idx = 0;
+        if let Err(_) = log_complex_to_file("output.csv", &signed_buf) {
+            warn!("File access error; failed to log values.");
         }
-
-        let string_buf = signed_buf
-            .iter()
-            .map(|z| format!("{},{}\n", z.re, z.im))
-            .collect::<Vec<String>>();
-
-        string_buf.iter().for_each(|l| {
-            f.write(l.as_bytes()).expect("Write failed!");
-        });
     }
 }
 
-/// Configure the SDR device.
-pub fn config_sdr(sdr: &mut RtlSdr, freq: u32, sample_freq: u32) -> Result<(), RtlsdrError> {
-    // Use auto-gain
-    sdr.set_tuner_gain(rtl_sdr_rs::TunerGain::Auto)?;
-    // Disable bias-tee
-    sdr.set_bias_tee(false)?;
-    // Reset the endpoint before we try to read from it (mandatory)
-    sdr.reset_buffer()?;
-    // Set the frequency
-    sdr.set_center_freq(freq)?;
-    // Set sample rate
-    sdr.set_sample_rate(sample_freq)?;
-    // Set bandwidth?
-    sdr.set_tuner_bandwidth(70_000)?; // 70 kHz
-    Ok(())
+/// This should in theory return the delta between the fox's transmitter's frequency and
+/// the frequency according to the local oscillator.
+fn obtain_freq_offset<T>(_x: &mut [Complex<T>]) -> f32
+where
+    T: FftNum,
+{
+    // let bins = 1024;
+    // let num_samples = x.len();
+    // let mut planner = FftPlanner::new();
+
+    // let fft = planner.plan_fft_forward(bins);
+    // fft.process(x);
+
+    // let bins: Vec<(f32, f32)> = x
+    //     .iter()
+    //     .take(num_samples / 2)
+    //     .enumerate()
+    //     .map(|(i, z)| (i as f32, (z.norm_sqr() as f32 + f32::EPSILON).log10()))
+    //     // .inspect(|(f, p)| {
+    //     //     if *f < (FREQUENCY + 100000) as f32 {
+    //     //         debug!("{f} Hz: {p} dB")
+    //     //     }
+    //     // })
+    //     .collect();
+
+    // let (max_freq, max_power) = bins
+    //     .iter()
+    //     .max_by_key(|(_, p)| *p as i32)
+    //     .expect("Is okay.");
+
+    // *max_freq
+    todo!()
 }

@@ -1,0 +1,3 @@
+load signal.mat output
+
+signal = timetable(table2array(output), 'SampleRate', 2048000);
