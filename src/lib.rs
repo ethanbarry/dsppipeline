@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+pub mod filters;
 pub mod processing;
 
 use rtl_sdr_rs::{error::RtlsdrError, RtlSdr, DEFAULT_BUF_LENGTH as BUF_LEN};

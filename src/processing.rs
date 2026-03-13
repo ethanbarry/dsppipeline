@@ -1,5 +1,5 @@
 use std::{
-    fs::File,
+    fs::OpenOptions,
     io::{self, Write},
     sync::mpsc::Receiver,
 };
@@ -8,7 +8,7 @@ use rtl_sdr_rs::DEFAULT_BUF_LENGTH as BUF_LEN;
 use rustfft::{num_complex::Complex, FftNum, FftPlanner};
 use tracing::{debug, info, warn};
 
-use crate::{terminated, FREQUENCY, SAMPLE_FREQUENCY};
+use crate::{filters::FIRFilter, terminated, FREQUENCY, SAMPLE_FREQUENCY};
 
 fn complex_decimate(x: &[Complex<i16>]) -> Vec<Complex<i16>> {
     x.windows(10)
@@ -20,8 +20,7 @@ fn complex_decimate(x: &[Complex<i16>]) -> Vec<Complex<i16>> {
 }
 
 fn log_complex_to_file(fname: &str, x: &[Complex<i16>]) -> Result<(), io::Error> {
-    info!("Opening output file.");
-    let mut f = File::create(fname)?;
+    let mut f = OpenOptions::new().append(true).create(true).open(fname)?;
 
     x.iter()
         .map(|z| {
@@ -40,11 +39,31 @@ fn log_complex_to_file(fname: &str, x: &[Complex<i16>]) -> Result<(), io::Error>
     Ok(())
 }
 
+fn log_complex_floats_to_file(fname: &str, x: &[Complex<f32>]) -> Result<(), io::Error> {
+    let mut f = OpenOptions::new().append(true).create(true).open(fname)?;
+
+    x.iter()
+        .map(|z| {
+            if z.im > 0.0 {
+                format!("{:.8}+{:.8}i\n", z.re, z.im)
+            } else if z.im < 0.0 {
+                format!("{:.8}{:.8}i\n", z.re, z.im)
+            } else {
+                format!("{:.8}+{:.8}i\n", z.re, z.im)
+            }
+        })
+        .for_each(|l| {
+            f.write(l.as_bytes()).expect("Write failed!");
+        });
+
+    Ok(())
+}
+
 pub fn process(rx: Receiver<Box<[u8; BUF_LEN]>>) {
     info!("Processing thread started.");
 
     while !terminated() {
-        let signed_buf = rx
+        let signal = rx
             .recv()
             .expect("The other thread has crashed if this fails.")
             .iter()
@@ -55,11 +74,21 @@ pub fn process(rx: Receiver<Box<[u8; BUF_LEN]>>) {
             .map(|w| Complex::new(w[1], w[0]))
             .collect::<Vec<Complex<i16>>>();
 
-        let signed_buf = complex_decimate(&signed_buf);
+        let signal = complex_decimate(&signal);
 
-        if let Err(_) = log_complex_to_file("output.csv", &signed_buf) {
-            warn!("File access error; failed to log values.");
-        }
+        let mut float_signal = signal
+            .iter()
+            .map(|&z| Complex::new(z.re as f32, z.im as f32))
+            .collect::<Vec<Complex<f32>>>();
+
+        info!("Opening output file.");
+        log_complex_floats_to_file("cmplxOutputPre.csv", &float_signal).expect("File OK.");
+
+        let mut filter = FIRFilter::default();
+        filter.process(&mut float_signal);
+
+        info!("Opening output file.");
+        log_complex_floats_to_file("cmplxOutputPost.csv", &float_signal).expect("File OK.");
     }
 }
 
