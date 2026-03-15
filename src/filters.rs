@@ -1,11 +1,11 @@
 use rustfft::num_complex::Complex;
 
-pub struct FIRFilter {
+pub struct BandpassFilter {
     taps: Vec<f32>,
     state: Vec<Complex<f32>>,
 }
 
-impl FIRFilter {
+impl BandpassFilter {
     pub fn new(taps: &[f32]) -> Self {
         let num_taps = taps.len();
         Self {
@@ -39,6 +39,41 @@ impl FIRFilter {
             self.state
                 .copy_from_slice(&signal[signal_len - (num_taps - 1)..]);
         }
+    }
+}
+
+pub struct BoxcarFilter {
+    sum: f32,
+    mean: f32,
+    idx: usize,
+    buf: Vec<f32>,
+    width: usize,
+}
+
+impl BoxcarFilter {
+    pub fn new(width: usize) -> Self {
+        Self {
+            sum: 0.0,
+            mean: 0.0,
+            idx: 0,
+            buf: vec![0.0; width],
+            width,
+        }
+    }
+
+    pub fn default() -> Self {
+        Self::new(10)
+    }
+
+    pub fn process(&mut self, signal: &mut [f32]) {
+        for &mut val in signal {
+            self.sum -= self.buf[self.idx];
+
+            self.sum += val;
+            self.buf[self.idx] = todo!()
+        }
+
+        todo!()
     }
 }
 

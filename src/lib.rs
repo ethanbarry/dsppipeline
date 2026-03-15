@@ -6,6 +6,8 @@ use std::{
     },
 };
 
+pub mod debug_logging;
+pub mod demodulation;
 pub mod filters;
 pub mod processing;
 
