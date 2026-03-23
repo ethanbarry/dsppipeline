@@ -5,7 +5,7 @@ use rustfft::{num_complex::Complex, FftNum, FftPlanner};
 use tracing::{debug, info, warn};
 
 use crate::{
-    debug_logging::log_complex_floats_to_file,
+    debug_logging::{log_complex_floats_to_file, log_floats_to_file},
     demodulation::QuadDemod,
     filters::{BandpassFilter, BoxcarFilter},
     terminated, FREQUENCY, SAMPLE_FREQUENCY,
@@ -27,6 +27,8 @@ fn absolute_power(x: &[Complex<f32>]) -> f32 {
 
 pub fn process(rx: Receiver<Box<[u8; BUF_LEN]>>) {
     info!("Processing thread started.");
+
+    let mut noise_floor = 0.0;
 
     while !terminated() {
         let signal = rx
@@ -53,23 +55,36 @@ pub fn process(rx: Receiver<Box<[u8; BUF_LEN]>>) {
 
         let mut filter = BandpassFilter::default();
         filter.process(&mut signal);
-
         let filtered_power = absolute_power(&signal);
-        let snr_db = 10.0 * (filtered_power / power + f32::EPSILON).log10();
+        let power_ratio = filtered_power / power;
+        let snr_db = 10.0
+            * (if power_ratio + f32::EPSILON > 0.0 {
+                power_ratio + f32::EPSILON
+            } else {
+                f32::EPSILON
+            })
+            .log10();
 
-        info!("SNR: {snr_db} dB");
+        if snr_db < noise_floor {
+            noise_floor = snr_db;
+        }
 
-        log_complex_floats_to_file("cmplxOutputPost.csv", &signal).expect("File OK.");
+        let gain = snr_db - noise_floor;
+        info!("SNR: {snr_db} dB; Gain: {gain} dBM");
+
+        // log_complex_floats_to_file("cmplxOutputPost.csv", &signal).expect("File OK.");
 
         let mut demod = QuadDemod::new();
         let datastream = demod.process(&signal);
 
         // Boxcar filter the datastream (overlapping moving average).
-        let datastream = datastream
+        let datastream: Vec<f32> = datastream
             .windows(1000)
             .step_by(500)
             .map(|t| t.iter().sum::<f32>() / t.len() as f32)
-            .collect::<Vec<f32>>();
+            .collect();
+
+        log_floats_to_file("output.txt", &datastream).expect("File OK.");
 
         /*
            Okay, our sample rate was 2048000 Hz on the RTL-SDR.

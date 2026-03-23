@@ -42,3 +42,13 @@ pub fn log_complex_floats_to_file(fname: &str, x: &[Complex<f32>]) -> Result<(),
 
     Ok(())
 }
+
+pub fn log_floats_to_file(fname: &str, x: &[f32]) -> Result<(), io::Error> {
+    let mut f = OpenOptions::new().append(true).create(true).open(fname)?;
+
+    x.iter().map(|z| format!("{:.8}, ", z)).for_each(|l| {
+        f.write(l.as_bytes()).expect("Write failed!");
+    });
+
+    Ok(())
+}

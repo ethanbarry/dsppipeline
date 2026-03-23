@@ -20,6 +20,9 @@ const FREQUENCY: u32 = 914_975_000;
 /// Sample frequency of the RTL-SDR in Hz.
 const SAMPLE_FREQUENCY: u32 = 2_048_000;
 
+/// Bandwidth setpoint of the SDR.
+const BANDWIDTH: u32 = 80_000;
+
 // Shutdown flag.
 pub static TERMINATED: AtomicBool = AtomicBool::new(false);
 
@@ -34,7 +37,12 @@ fn open_sdr() -> Result<RtlSdr, ()> {
 }
 
 /// Configure the SDR device.
-pub fn config_sdr(sdr: &mut RtlSdr, freq: u32, sample_freq: u32) -> Result<(), RtlsdrError> {
+pub fn config_sdr(
+    sdr: &mut RtlSdr,
+    freq: u32,
+    sample_freq: u32,
+    bandwidth: u32,
+) -> Result<(), RtlsdrError> {
     // Use auto-gain
     sdr.set_tuner_gain(rtl_sdr_rs::TunerGain::Auto)?;
     // Disable bias-tee
@@ -46,7 +54,7 @@ pub fn config_sdr(sdr: &mut RtlSdr, freq: u32, sample_freq: u32) -> Result<(), R
     // Set sample rate
     sdr.set_sample_rate(sample_freq)?;
     // Set bandwidth
-    sdr.set_tuner_bandwidth(60_000)?; // 60 kHz
+    sdr.set_tuner_bandwidth(bandwidth)?; // 60 kHz
     Ok(())
 }
 
@@ -59,7 +67,8 @@ pub fn receive(tx: Sender<Box<[u8; BUF_LEN]>>) {
 
     let mut sdr = sdr.expect("The device exists.");
 
-    config_sdr(&mut sdr, FREQUENCY, SAMPLE_FREQUENCY).expect("Configuration should work.");
+    config_sdr(&mut sdr, FREQUENCY, SAMPLE_FREQUENCY, BANDWIDTH)
+        .expect("Configuration should work.");
 
     info!("SDR is tuned to {} Hz.", sdr.get_center_freq());
     info!("Sampling at {} Hz.", sdr.get_sample_rate());
