@@ -1,11 +1,12 @@
 use std::{
+    os::unix::net::UnixStream,
     process::exit,
     sync::{atomic::Ordering, mpsc},
     thread::{self, sleep},
     time::Duration,
 };
 
-use dsppipeline::{processing::process, receive, TERMINATED};
+use dsppipeline::{processing::process, receive, SAMPLING, TERMINATED};
 use tracing::{debug, error, info, trace, warn, Level};
 
 fn main() {
@@ -22,6 +23,8 @@ fn main() {
         TERMINATED.store(true, Ordering::Relaxed);
     })
     .expect("Ctrl-C handler could not be set; terminating.");
+
+    //  let stream = UnixStream::connect("/tmp/commsocket").expect("This should not fail.");
 
     let (tx, rx) = mpsc::channel();
 

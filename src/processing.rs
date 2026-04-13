@@ -5,7 +5,8 @@ use rustfft::{num_complex::Complex, FftNum, FftPlanner};
 use tracing::{debug, info, warn};
 
 use crate::{
-    debug_logging::{log_complex_floats_to_file, log_floats_to_file},
+    correlation::BarkerCorrelator,
+    debug_logging::{log_bytes_to_file, log_complex_floats_to_file, log_floats_to_file},
     demodulation::QuadDemod,
     filters::{BandpassFilter, BoxcarFilter},
     terminated, FREQUENCY, SAMPLE_FREQUENCY,
@@ -30,73 +31,92 @@ pub fn process(rx: Receiver<Box<[u8; BUF_LEN]>>) {
 
     let mut noise_floor = 0.0;
 
+    let buffer_size = (395 + 26 - 395 / 25) * 5;
+    let mut correlation_buffer: Vec<i8> = vec![0; buffer_size];
+
     while !terminated() {
-        let signal = rx
-            .recv() // Await data from the other thread.
-            .expect("The other thread has crashed if this fails.")
-            .iter()
-            .map(|&a| (a as i16 - 127) / 127) // Unsigned to signed conversion.
-            .collect::<Vec<i16>>()
-            .windows(2)
-            .step_by(2) // Grab the interleaved (I, Q) pairs.
-            .map(|w| Complex::new(w[1], w[0]))
-            .collect::<Vec<Complex<i16>>>();
+        for _ in (0..buffer_size - 25).step_by(25) {
+            let signal = rx
+                .recv() // Await data from the other thread.
+                .expect("The other thread has crashed if this fails.")
+                .iter()
+                .map(|&a| (a as i16 - 127) / 127) // Unsigned to signed conversion.
+                .collect::<Vec<i16>>()
+                .windows(2)
+                .step_by(2) // Grab the interleaved (I, Q) pairs.
+                .map(|w| Complex::new(w[1], w[0]))
+                .collect::<Vec<Complex<i16>>>();
 
-        let signal = complex_decimate(&signal); // Downsample with a moving average filter.
+            let signal = complex_decimate(&signal); // Downsample with a moving average filter.
 
-        let mut signal: Vec<Complex<f32>> = signal
-            .iter()
-            .map(|&z| Complex::new(z.re as f32, z.im as f32))
-            .collect();
+            let mut signal: Vec<Complex<f32>> = signal
+                .iter()
+                .map(|&z| Complex::new(z.re as f32, z.im as f32))
+                .collect();
 
-        let power = absolute_power(&signal);
-        // info!("Opening output file.");
-        // log_complex_floats_to_file("cmplxOutputPre.csv", &float_signal).expect("File OK.");
+            let power = absolute_power(&signal);
+            // info!("Opening output file.");
+            // log_complex_floats_to_file("cmplxOutputPre.csv", &float_signal).expect("File OK.");
 
-        let mut filter = BandpassFilter::default();
-        filter.process(&mut signal);
-        let filtered_power = absolute_power(&signal);
-        let power_ratio = filtered_power / power;
-        let snr_db = 10.0
-            * (if power_ratio + f32::EPSILON > 0.0 {
-                power_ratio + f32::EPSILON
-            } else {
-                f32::EPSILON
-            })
-            .log10();
+            let mut filter = BandpassFilter::default();
+            filter.process(&mut signal);
+            let filtered_power = absolute_power(&signal);
+            let power_ratio = filtered_power / power;
+            let snr_db = 10.0
+                * (if power_ratio + f32::EPSILON > 0.0 {
+                    power_ratio + f32::EPSILON
+                } else {
+                    f32::EPSILON
+                })
+                .log10();
 
-        if snr_db < noise_floor {
-            noise_floor = snr_db;
+            if snr_db < noise_floor {
+                noise_floor = snr_db;
+            }
+
+            let gain = snr_db - noise_floor;
+            info!("SNR: {snr_db} dB; Gain: {gain} dBM");
+
+            log_complex_floats_to_file("cmplxOutputPost.csv", &signal).expect("File OK.");
+
+            let mut demod = QuadDemod::new();
+            let datastream = demod.process(&signal);
+
+            // Boxcar filter the datastream (overlapping moving average).
+            let datastream: Vec<f32> = datastream
+                .windows(1000)
+                .step_by(500)
+                .map(|t| t.iter().sum::<f32>() / t.len() as f32)
+                .collect();
+
+            // log_floats_to_file("output.txt", &datastream).expect("File OK.");
+
+            /*
+               Okay, our sample rate was 2048000 Hz on the RTL-SDR.
+               We downsampled once for the decimation step, so the new sample rate is 2048000 / 10 = 204800 Hz.
+               We have just downsampled once more, but in a more complicated way.
+
+               Every 500 samples just got averaged with their neighbors into one singular value. Then the
+               downsampling was 500-to-1 and our new sample rate is 204800 / 500 = 409.6 Hz.
+            */
+
+            let mut bitstream: Vec<i8> = datastream
+                .iter()
+                .map(|&x| if x > 0.0 { 1 } else { -1 })
+                .collect();
+
+            // log_bytes_to_file("outputBitstream.txt", &bitstream).expect("File OK.");
+
+            // println!("len: {}", bitstream.len());
+            correlation_buffer.append(&mut bitstream);
         }
 
-        let gain = snr_db - noise_floor;
-        info!("SNR: {snr_db} dB; Gain: {gain} dBM");
+        let mut cor = BarkerCorrelator::new();
+        if let Ok(corscores) = cor.process(&correlation_buffer) {
+            log_floats_to_file("outputCorscores.txt", &corscores).expect("File OK.");
+        }
 
-        // log_complex_floats_to_file("cmplxOutputPost.csv", &signal).expect("File OK.");
-
-        let mut demod = QuadDemod::new();
-        let datastream = demod.process(&signal);
-
-        // Boxcar filter the datastream (overlapping moving average).
-        let datastream: Vec<f32> = datastream
-            .windows(1000)
-            .step_by(500)
-            .map(|t| t.iter().sum::<f32>() / t.len() as f32)
-            .collect();
-
-        log_floats_to_file("output.txt", &datastream).expect("File OK.");
-
-        /*
-           Okay, our sample rate was 2048000 Hz on the RTL-SDR.
-           We downsampled once for the decimation step, so the new sample rate is 2048000 / 10 = 204800 Hz.
-           We have just downsampled once more, but in a more complicated way.
-
-           Every 500 samples just got averaged with their neighbors into one singular value. Then the
-           downsampling was 500-to-1 and our new sample rate is 204800 / 500 = 409.6 Hz.
-        */
-
-        // Zero-crossing Bit Transition won't work by itself since that would show [1 1 1] as a single [1].
-        // Time info is necessary.
+        correlation_buffer.clear();
     }
 }
 

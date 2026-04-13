@@ -52,3 +52,13 @@ pub fn log_floats_to_file(fname: &str, x: &[f32]) -> Result<(), io::Error> {
 
     Ok(())
 }
+
+pub fn log_bytes_to_file(fname: &str, x: &[i8]) -> Result<(), io::Error> {
+    let mut f = OpenOptions::new().append(true).create(true).open(fname)?;
+
+    x.iter().map(|b| format!("{}, ", b)).for_each(|s| {
+        f.write(s.as_bytes()).expect("Write failed!");
+    });
+
+    Ok(())
+}

@@ -1,11 +1,15 @@
 use std::{
     alloc::{alloc_zeroed, Layout},
+    os::unix::net::UnixStream,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
     },
+    thread::sleep,
+    time::Duration,
 };
 
+pub mod correlation;
 pub mod debug_logging;
 pub mod demodulation;
 pub mod filters;
@@ -25,6 +29,7 @@ const BANDWIDTH: u32 = 80_000;
 
 // Shutdown flag.
 pub static TERMINATED: AtomicBool = AtomicBool::new(false);
+pub static SAMPLING: AtomicBool = AtomicBool::new(false);
 
 fn open_sdr() -> Result<RtlSdr, ()> {
     if let Ok(sdr) = RtlSdr::open_first_available() {
@@ -75,24 +80,34 @@ pub fn receive(tx: Sender<Box<[u8; BUF_LEN]>>) {
 
     info!("Reading samples...");
     while !terminated() {
-        let mut buf: Box<[u8; BUF_LEN]> = alloc_buf();
+        // if stream
+        // if SAMPLING.load(Ordering::Relaxed) {
+        let mut ctr = 0;
 
-        let res = sdr.read_sync(&mut *buf);
-        match res {
-            Ok(n) => {
-                if n < BUF_LEN {
-                    info!("Short read ({:#?}), samples dropped, exiting!", n);
+        while ctr < 24 {
+            let mut buf: Box<[u8; BUF_LEN]> = alloc_buf();
+
+            let res = sdr.read_sync(&mut *buf);
+            match res {
+                Ok(n) => {
+                    if n < BUF_LEN {
+                        info!("Short read ({:#?}), samples dropped, exiting!", n);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    info!("Read error: {:#?}", e);
                     break;
                 }
             }
-            Err(e) => {
-                info!("Read error: {:#?}", e);
-                break;
-            }
-        }
 
-        tx.send(buf)
-            .expect("The other thread has crashed if this fails.");
+            tx.send(buf)
+                .expect("The other thread has crashed if this fails.");
+            ctr += 1;
+        }
+        // } else {
+        //     sleep(Duration::from_millis(500));
+        // }
     }
 
     warn!("Closing SDR!");
